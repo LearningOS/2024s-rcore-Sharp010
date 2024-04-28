@@ -1,5 +1,6 @@
 //! Types related to task management
 use super::TaskContext;
+use crate::syscall::TaskInfo;
 use crate::config::TRAP_CONTEXT_BASE;
 use crate::mm::{
     kernel_stack_position, MapPermission, MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE,
@@ -28,6 +29,9 @@ pub struct TaskControlBlock {
 
     /// Program break
     pub program_brk: usize,
+
+    /// task info
+    pub task_info :TaskInfo
 }
 
 impl TaskControlBlock {
@@ -63,6 +67,7 @@ impl TaskControlBlock {
             base_size: user_sp,
             heap_bottom: user_sp,
             program_brk: user_sp,
+            task_info:TaskInfo::new()
         };
         // prepare TrapContext in user space
         let trap_cx = task_control_block.get_trap_cx();
@@ -95,6 +100,10 @@ impl TaskControlBlock {
         } else {
             None
         }
+    }
+     /// get task_info
+     pub fn get_info(&mut self)->&mut TaskInfo{
+        &mut self.task_info
     }
 }
 

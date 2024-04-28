@@ -79,6 +79,7 @@ impl TaskManager {
         let mut inner = self.inner.exclusive_access();
         let next_task = &mut inner.tasks[0];
         next_task.task_status = TaskStatus::Running;
+        next_task.get_info().init_time().flush_status(TaskStatus::Running);
         let next_task_cx_ptr = &next_task.task_cx as *const TaskContext;
         drop(inner);
         let mut _unused = TaskContext::zero_init();
@@ -89,11 +90,19 @@ impl TaskManager {
         panic!("unreachable in run_first_task!");
     }
 
+     /// get current task
+     pub fn current_task(&self)->*mut TaskControlBlock{
+        let mut inner= self.inner.exclusive_access();
+        let current=inner.current_task;
+        &mut inner.tasks[current] as *mut _
+    }
+
     /// Change the status of current `Running` task into `Ready`.
     fn mark_current_suspended(&self) {
         let mut inner = self.inner.exclusive_access();
         let cur = inner.current_task;
         inner.tasks[cur].task_status = TaskStatus::Ready;
+        inner.tasks[cur].get_info().flush_status(TaskStatus::Ready);
     }
 
     /// Change the status of current `Running` task into `Exited`.
@@ -101,6 +110,7 @@ impl TaskManager {
         let mut inner = self.inner.exclusive_access();
         let cur = inner.current_task;
         inner.tasks[cur].task_status = TaskStatus::Exited;
+        inner.tasks[cur].get_info().flush_status(TaskStatus::Exited);
     }
 
     /// Find next task to run and return task id.
@@ -141,6 +151,7 @@ impl TaskManager {
             let current = inner.current_task;
             inner.tasks[next].task_status = TaskStatus::Running;
             inner.current_task = next;
+            inner.tasks[next].get_info().init_time().flush_status(TaskStatus::Running);
             let current_task_cx_ptr = &mut inner.tasks[current].task_cx as *mut TaskContext;
             let next_task_cx_ptr = &inner.tasks[next].task_cx as *const TaskContext;
             drop(inner);
