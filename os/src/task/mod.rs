@@ -17,6 +17,7 @@ mod task;
 use crate::config::MAX_APP_NUM;
 use crate::loader::{get_num_app, init_app_cx};
 use crate::sync::UPSafeCell;
+use crate::syscall::TaskInfo;
 use lazy_static::*;
 use switch::__switch;
 pub use task::{TaskControlBlock, TaskStatus};
@@ -46,6 +47,12 @@ pub struct TaskManagerInner {
     /// id of current `Running` task
     current_task: usize,
 }
+impl TaskManagerInner {
+    /// 
+    pub fn get_current_task_mut(&mut self)-> &mut TaskControlBlock{
+        & mut self.tasks[self.current_task]
+    }
+}
 
 lazy_static! {
     /// Global variable: TASK_MANAGER
@@ -54,6 +61,7 @@ lazy_static! {
         let mut tasks = [TaskControlBlock {
             task_cx: TaskContext::zero_init(),
             task_status: TaskStatus::UnInit,
+            task_info:TaskInfo::new()
         }; MAX_APP_NUM];
         for (i, task) in tasks.iter_mut().enumerate() {
             task.task_cx = TaskContext::goto_restore(init_app_cx(i));
@@ -134,6 +142,13 @@ impl TaskManager {
         } else {
             panic!("All applications completed!");
         }
+    }
+
+     /// get *mut of current task 
+     pub fn current_task(&self)->*mut TaskControlBlock{
+        let mut inner= self.inner.exclusive_access();
+        let current=inner.current_task;
+        &mut inner.tasks[current] as *mut _
     }
 }
 
