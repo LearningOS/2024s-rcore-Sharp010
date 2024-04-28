@@ -1,6 +1,6 @@
 //! File and filesystem-related syscalls
-use crate::fs::{open_file, OpenFlags, Stat};
-use crate::mm::{translated_byte_buffer, translated_str, UserBuffer};
+use crate::fs::{open_file, OpenFlags, Stat,ROOT_INODE, StatMode};
+use crate::mm::{translated_byte_buffer, translated_str, UserBuffer, translated_refmut};
 use crate::task::{current_task, current_user_token};
 
 pub fn sys_write(fd: usize, buf: *const u8, len: usize) -> isize {
@@ -55,6 +55,8 @@ pub fn sys_open(path: *const u8, flags: u32) -> isize {
         let mut inner = task.inner_exclusive_access();
         let fd = inner.alloc_fd();
         inner.fd_table[fd] = Some(inode);
+        // don't learn this
+        inner.fd_stat[fd]=Some((ROOT_INODE.find_inode(path.as_str()),StatMode::FILE));
         fd as isize
     } else {
         -1
@@ -81,7 +83,15 @@ pub fn sys_fstat(_fd: usize, _st: *mut Stat) -> isize {
         "kernel:pid[{}] sys_fstat NOT IMPLEMENTED",
         current_task().unwrap().pid.0
     );
-    -1
+    let stat =translated_refmut(current_user_token(), _st);
+    stat.dev=0;
+    let current_task=current_task().unwrap();
+    stat.ino=current_task.inner_exclusive_access().fd_stat[_fd].unwrap().0 as u64;
+    // don't learn this
+    stat.mode=StatMode::FILE;
+    // get nlinks
+    stat.nlink=ROOT_INODE.find_nlinks(stat.ino as u32);
+    0
 }
 
 /// YOUR JOB: Implement linkat.
@@ -90,7 +100,14 @@ pub fn sys_linkat(_old_name: *const u8, _new_name: *const u8) -> isize {
         "kernel:pid[{}] sys_linkat NOT IMPLEMENTED",
         current_task().unwrap().pid.0
     );
-    -1
+    // get str
+    let old_name =translated_str(current_user_token(), _old_name);
+    let new_name =translated_str(current_user_token(), _new_name);
+    if old_name==new_name{
+        return -1;
+    }
+    ROOT_INODE.link_at(old_name.as_str(), new_name.as_str());
+    0
 }
 
 /// YOUR JOB: Implement unlinkat.
@@ -99,5 +116,6 @@ pub fn sys_unlinkat(_name: *const u8) -> isize {
         "kernel:pid[{}] sys_unlinkat NOT IMPLEMENTED",
         current_task().unwrap().pid.0
     );
-    -1
+    let name =translated_str(current_user_token(), _name);
+    ROOT_INODE.unlink_at(name.as_str())
 }

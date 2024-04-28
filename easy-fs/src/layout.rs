@@ -1,3 +1,5 @@
+use crate::Inode;
+
 use super::{get_block_cache, BlockDevice, BLOCK_SZ};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -68,7 +70,7 @@ impl SuperBlock {
     }
 }
 /// Type of a disk inode
-#[derive(PartialEq)]
+#[derive(PartialEq,Debug)]
 pub enum DiskInodeType {
     File,
     Directory,
@@ -386,6 +388,20 @@ impl DiskInode {
             start = end_current_block;
         }
         write_size
+    }
+    
+    // delete a dirent by swap and delete
+    pub fn delete_dirent(&mut self,old_dirent_id:u32,block_device: &Arc<dyn BlockDevice>,){
+        // only directory
+        assert_eq!(self.type_,DiskInodeType::Directory);
+        // find last dirent
+        let file_count=(self.size as usize)/DIRENT_SZ;
+        let mut last_dirent=DirEntry::empty();
+        self.read_at((file_count-1)*DIRENT_SZ, last_dirent.as_bytes_mut(), block_device);
+        // overwrite to old_dirent
+        self.write_at((old_dirent_id as usize)*DIRENT_SZ, last_dirent.as_bytes(), block_device);
+        // delete last dirent
+        self.size-=DIRENT_SZ as u32;
     }
 }
 /// A directory entry
