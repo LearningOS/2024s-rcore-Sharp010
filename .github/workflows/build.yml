@@ -1,6 +1,6 @@
 name: Jobs
 
-on: [push]
+on: []
 
 env:
   CARGO_TERM_COLOR: always
