@@ -2,7 +2,7 @@
 
 use super::id::RecycleAllocator;
 use super::manager::insert_into_pid2process;
-use super::TaskControlBlock;
+use super::{TaskControlBlock,current_task};
 use super::{add_task, SignalFlags};
 use super::{pid_alloc, PidHandle};
 use crate::fs::{File, Stdin, Stdout};
@@ -49,9 +49,172 @@ pub struct ProcessControlBlockInner {
     pub semaphore_list: Vec<Option<Arc<Semaphore>>>,
     /// condvar list
     pub condvar_list: Vec<Option<Arc<Condvar>>>,
+    /// enable deadlock detect
+    pub deadlock_detect:bool,
+    /// 
+    pub mutex_available:Vec<u32>,
+    ///
+    pub mutex_allocation:Vec<Vec<u32>>,
+    ///
+    pub mutex_need:Vec<Vec<u32>>,
+
+    pub mutex_finished:Vec<bool>,
+    /// 
+    pub sem_available:Vec<u32>,
+    ///
+    pub sem_allocation:Vec<Vec<u32>>,
+    ///
+    pub sem_need:Vec<Vec<u32>>,
+
+    pub sem_finished:Vec<bool>,
 }
 
 impl ProcessControlBlockInner {
+    #![allow(unused)]
+    fn safe(&self,avliable:&Vec<u32>,allocation:&Vec<Vec<u32>>,need:&Vec<Vec<bool>>,finished:&Vec<bool>)->bool{
+        // let mut alloc_tid=0;
+        let mut available=avliable.clone();
+        let allocation=allocation.clone();
+        let need=need.clone();
+        let mut finished=finished.clone();
+        let unfinished_len=finished.iter().filter(|&flag| *flag==false).count();
+        // alloc all unfinised thread and recycle resource
+        for _i in 0..unfinished_len{
+            // find a thread to alloc 
+            let mut alloc_tid:isize=-1;
+            for (tid,needs) in need.iter().enumerate(){
+                if finished[tid]{
+                    continue;
+                }
+                // check need <= avail
+                let mut enough =true;
+                for (j,need_j) in needs.iter().enumerate(){
+                    // need > avail
+                    if *need_j && available[j]<=0{
+                        enough=false;
+                        break;
+                    }
+                }
+                // find a thread to alloc
+                if enough{
+                    alloc_tid=tid as isize;
+                    break;
+                }
+            }
+            // can't run all thread  => unsafe state
+            if alloc_tid==-1{
+                return false;
+            }else{
+                finished[alloc_tid as usize]=true;
+                // alloc and  recycle resource
+                for (i,alloc) in allocation[alloc_tid as usize].iter().enumerate(){
+                    available[i]+=*alloc;
+                }
+            }
+        }
+        // can run all threads => safe state
+        true
+    }
+    pub fn detect_mutex_deadlock(&mut self,mutex_id:usize)->i32{
+        let current_tid=current_task().unwrap().inner_exclusive_access().get_tid();
+        // error  => double lock
+        if self.mutex_allocation[current_tid][mutex_id]>=1{
+            return -0xdead;
+        }
+        // detect lock loop
+        if self.mutex_available[mutex_id]<=0{
+            for (tid,alloc) in self.mutex_allocation.iter().enumerate(){
+                if alloc[mutex_id]>=1{
+                    for i in self.mutex_need[tid].iter(){
+                        if *i>=1 && self.mutex_allocation[current_tid][*i as usize]>=1{
+                            // find a loop
+                            return -0xdead;
+                        }
+                    }
+                    break;
+                }
+            }
+            self.mutex_need[current_tid][mutex_id]=1;
+            return -1;
+            // alloc and test safety
+            // self.mutex_allocation[current_tid][mutex_id]+=1;
+            // self.mutex_available[mutex_id]-=1;
+            // self.mutex_need[current_tid][mutex_id]=0;
+            // if self.safe(&self.mutex_available,&self.mutex_allocation,&self.mutex_need,&self.mutex_finished){
+                // return 0;
+            // }else {
+                // unsafe and restore
+            //     self.mutex_allocation[current_tid][mutex_id]-=1;
+            //     self.mutex_available[mutex_id]+=1;
+            //     self.mutex_need[current_tid][mutex_id]=true;
+            //     println!("unsafe!");
+            //     return -1;
+            //  }
+        }else{
+            println!("mutex {} tid {} sem_need_len {} sem_need_tid_len {}",mutex_id,current_tid,self.sem_need.len(),self.sem_need[0].len());
+            self.mutex_need[current_tid][mutex_id]=0;
+            self.mutex_allocation[current_tid][mutex_id]+=1;
+            self.mutex_available[mutex_id]-=1;
+            return 0;
+        }
+        // 0
+    }
+    pub fn detect_semaphore_deadlock(&mut self,sem_id:usize)->i32{
+        let current_tid=current_task().unwrap().inner_exclusive_access().get_tid();
+
+        // // error  => double down
+        // if self.sem_allocation[current_tid][sem_id]{
+        //     return -0xdead;
+        // }
+        // suspend current
+        if self.sem_available[sem_id]<=0{
+            // println!("no resource! {}",sem_id);
+            let mut loop_detect=true;
+            // only two edge loop can be detected here! bad!
+            // but one task only need single sem at a time 
+            for (tid,alloc) in self.sem_allocation.iter().enumerate(){
+                if alloc[sem_id]>=1{
+                    let mut loop_=false;
+                    for i in self.sem_need[tid].iter(){
+                        if *i>=1 && self.sem_allocation[current_tid][*i as usize]>=1 && self.sem_available[*i as usize]<=0{
+                            // find a loop
+                            loop_=true;
+                        }
+                    }
+                    // no loop => waite
+                    if !loop_ {
+                        self.sem_need[current_tid][sem_id]=1;
+                        loop_detect=false;
+                        return -1;
+                    }
+                }
+            }
+            // loop => deadlock
+            return -0xdead;
+        }else {
+            self.sem_need[current_tid][sem_id]=0;
+            self.sem_allocation[current_tid][sem_id]+=1;
+            self.sem_available[sem_id]-=1;
+            return 0;
+        }
+        // try to alloc and test safety
+        // self.sem_allocation[current_tid][sem_id]+=1;
+        // self.sem_available[sem_id]-=1;
+        // self.sem_need[current_tid][sem_id]=false;
+        // if self.safe(&self.sem_available,&self.sem_allocation,&self.sem_need,&self.sem_finished){
+        //     // save 
+        //     println!("[{}] get sem{}",current_task().unwrap().inner_exclusive_access().get_tid(),sem_id);
+        //     return 0;
+        // }else {
+        //     // unsafe state =>  restore and suspend current
+        //     self.sem_allocation[current_tid][sem_id]-=1;
+        //     self.sem_available[sem_id]+=1;
+        //     self.sem_need[current_tid][sem_id]=true;
+        //     // println!("unsafe!");
+        //     return -0xdead;
+        // }
+        // 0
+    }
     #[allow(unused)]
     /// get the address of app's page table
     pub fn get_user_token(&self) -> usize {
@@ -119,6 +282,15 @@ impl ProcessControlBlock {
                     mutex_list: Vec::new(),
                     semaphore_list: Vec::new(),
                     condvar_list: Vec::new(),
+                    deadlock_detect:false,
+                    mutex_allocation:vec![Vec::new()],
+                    mutex_available:Vec::new(),
+                    mutex_finished:vec![false],
+                    mutex_need:vec![Vec::new()],
+                    sem_allocation:vec![Vec::new()],
+                    sem_available:Vec::new(),
+                    sem_finished:vec![false],
+                    sem_need:vec![Vec::new()],
                 })
             },
         });
@@ -245,6 +417,15 @@ impl ProcessControlBlock {
                     mutex_list: Vec::new(),
                     semaphore_list: Vec::new(),
                     condvar_list: Vec::new(),
+                    deadlock_detect:parent.deadlock_detect,
+                    mutex_allocation:vec![Vec::new()],
+                    mutex_available:Vec::new(),
+                    mutex_finished:vec![false],
+                    mutex_need:vec![Vec::new()],
+                    sem_allocation:vec![Vec::new()],
+                    sem_available:Vec::new(),
+                    sem_finished:vec![false],
+                    sem_need:vec![Vec::new()],
                 })
             },
         });

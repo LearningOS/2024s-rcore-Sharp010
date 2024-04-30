@@ -1,9 +1,12 @@
+
+
 use crate::{
     mm::kernel_token,
     task::{add_task, current_task, TaskControlBlock},
     trap::{trap_handler, TrapContext},
 };
-use alloc::sync::Arc;
+use alloc::{sync::Arc};
+use alloc::{ vec,vec::Vec};
 /// thread create syscall
 pub fn sys_thread_create(entry: usize, arg: usize) -> isize {
     trace!(
@@ -35,12 +38,46 @@ pub fn sys_thread_create(entry: usize, arg: usize) -> isize {
     let new_task_res = new_task_inner.res.as_ref().unwrap();
     let new_task_tid = new_task_res.tid;
     let mut process_inner = process.inner_exclusive_access();
+    let detect =process_inner.deadlock_detect;
+    let enable_sem=process_inner.semaphore_list.len()>=1;
     // add new thread to current process
     let tasks = &mut process_inner.tasks;
+    if detect && enable_sem{
+        println!("craete thread! {} tasks len{}",new_task_tid,tasks.len());
+    }
     while tasks.len() < new_task_tid + 1 {
         tasks.push(None);
     }
+    if detect && enable_sem{
+        println!("craete thread!!!! {} tasks len{}",new_task_tid,tasks.len());
+    }
     tasks[new_task_tid] = Some(Arc::clone(&new_task));
+   if detect{
+        let task_len=tasks.len();
+        // shit code
+        // modify mutex records
+        let mutex_len=process_inner.mutex_list.len();
+        while task_len < new_task_tid{
+            println!("unexpect!!!!!");
+            process_inner.mutex_allocation.push(Vec::new());
+            process_inner.mutex_finished.push(true);
+            process_inner.mutex_need.push(Vec::new());
+        }
+        process_inner.mutex_allocation.push(vec![0;mutex_len]);
+        process_inner.mutex_finished.push(false);
+        process_inner.mutex_need.push(vec![0;mutex_len]);
+        // modify sem records
+        let sem_len=process_inner.semaphore_list.len();
+        while task_len < new_task_tid{
+            println!("unexpect!!!!!");
+            process_inner.sem_allocation.push(Vec::new());
+            process_inner.sem_finished.push(true);
+            process_inner.sem_need.push(Vec::new());
+        }
+        process_inner.sem_allocation.push(vec![0;sem_len]);
+        process_inner.sem_finished.push(false);
+        process_inner.sem_need.push(vec![0;sem_len]);
+   }
     let new_task_trap_cx = new_task_inner.get_trap_cx();
     *new_task_trap_cx = TrapContext::app_init_context(
         entry,
@@ -50,6 +87,9 @@ pub fn sys_thread_create(entry: usize, arg: usize) -> isize {
         trap_handler as usize,
     );
     (*new_task_trap_cx).x[10] = arg;
+    if detect && enable_sem{
+        println!("craete threadxxxx {} ",new_task_tid);
+    }
     new_task_tid as isize
 }
 /// get current thread id syscall
@@ -112,6 +152,10 @@ pub fn sys_waittid(tid: usize) -> i32 {
     if let Some(exit_code) = exit_code {
         // dealloc the exited thread
         process_inner.tasks[tid] = None;
+        if process_inner.deadlock_detect{
+            process_inner.mutex_finished[tid]=true;
+            process_inner.sem_finished[tid]=true;
+        }
         exit_code
     } else {
         // waited thread has not exited

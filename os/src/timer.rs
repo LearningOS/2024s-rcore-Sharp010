@@ -108,6 +108,15 @@ pub fn check_timer() {
     let mut timers = TIMERS.exclusive_access();
     while let Some(timer) = timers.peek() {
         if timer.expire_ms <= current_ms {
+            let process = current_task().unwrap().process.upgrade().unwrap();
+            let process_inner = process.inner_exclusive_access();
+            let detect=process_inner.deadlock_detect;
+            let sem_enable=process_inner.semaphore_list.len()>=1;
+            if detect && sem_enable{
+                println!("wake up!!!{}",&timer.task.inner_exclusive_access().get_tid());
+            }
+            drop(process_inner);
+            drop(process);
             wakeup_task(Arc::clone(&timer.task));
             timers.pop();
         } else {
