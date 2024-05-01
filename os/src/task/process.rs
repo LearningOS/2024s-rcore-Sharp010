@@ -57,63 +57,35 @@ pub struct ProcessControlBlockInner {
     pub mutex_allocation:Vec<Vec<u32>>,
     ///
     pub mutex_need:Vec<Vec<u32>>,
-
-    pub mutex_finished:Vec<bool>,
     /// 
     pub sem_available:Vec<u32>,
     ///
     pub sem_allocation:Vec<Vec<u32>>,
     ///
     pub sem_need:Vec<Vec<u32>>,
-
-    pub sem_finished:Vec<bool>,
 }
 
 impl ProcessControlBlockInner {
-    #![allow(unused)]
-    fn safe(&self,avliable:&Vec<u32>,allocation:&Vec<Vec<u32>>,need:&Vec<Vec<bool>>,finished:&Vec<bool>)->bool{
-        // let mut alloc_tid=0;
-        let mut available=avliable.clone();
-        let allocation=allocation.clone();
-        let need=need.clone();
-        let mut finished=finished.clone();
-        let unfinished_len=finished.iter().filter(|&flag| *flag==false).count();
-        // alloc all unfinised thread and recycle resource
-        for _i in 0..unfinished_len{
-            // find a thread to alloc 
-            let mut alloc_tid:isize=-1;
-            for (tid,needs) in need.iter().enumerate(){
-                if finished[tid]{
-                    continue;
-                }
-                // check need <= avail
-                let mut enough =true;
-                for (j,need_j) in needs.iter().enumerate(){
-                    // need > avail
-                    if *need_j && available[j]<=0{
-                        enough=false;
-                        break;
-                    }
-                }
-                // find a thread to alloc
-                if enough{
-                    alloc_tid=tid as isize;
-                    break;
-                }
-            }
-            // can't run all thread  => unsafe state
-            if alloc_tid==-1{
+    /// dfs to find a mutex dependency loop
+    fn find_sem_loop(&self,current_tid:usize,root_tid:usize)->bool{
+        let mut ret=true;
+        // find next dependency
+        if let Some((sem_need,_))=self.sem_need[current_tid].iter().enumerate().find(|(_,need)|**need>=1){
+             // reach the end of dependencies chain
+            if self.sem_available[sem_need]>=1{
                 return false;
-            }else{
-                finished[alloc_tid as usize]=true;
-                // alloc and  recycle resource
-                for (i,alloc) in allocation[alloc_tid as usize].iter().enumerate(){
-                    available[i]+=*alloc;
+            }
+            // find next node
+            for (tid,sem_alloc) in self.sem_allocation.iter().enumerate(){
+                if sem_alloc[sem_need]>=1 && tid!=root_tid{
+                    ret &=self.find_sem_loop(tid, root_tid);
                 }
             }
+        }else{
+            // reach the end of dependencies chain
+            ret &=false;
         }
-        // can run all threads => safe state
-        true
+        ret
     }
     pub fn detect_mutex_deadlock(&mut self,mutex_id:usize)->i32{
         let current_tid=current_task().unwrap().inner_exclusive_access().get_tid();
@@ -121,37 +93,34 @@ impl ProcessControlBlockInner {
         if self.mutex_allocation[current_tid][mutex_id]>=1{
             return -0xdead;
         }
-        // detect lock loop
+        // detect mutex loop
         if self.mutex_available[mutex_id]<=0{
-            for (tid,alloc) in self.mutex_allocation.iter().enumerate(){
-                if alloc[mutex_id]>=1{
+            let mut need=mutex_id;
+            loop {
+                // find a thread that hold the mutex
+                if let Some((tid,_))=self.mutex_allocation.iter().enumerate().find(|(_,mutex_alloc)|mutex_alloc[need]>=1){
+                    // loop => deadlock
+                    if tid==current_tid{
+                        return -0xdead;
+                    }
+                    let need_back=need;
+                    // find this thread need which muetx
                     for i in self.mutex_need[tid].iter(){
-                        if *i>=1 && self.mutex_allocation[current_tid][*i as usize]>=1{
-                            // find a loop
-                            return -0xdead;
+                        if *i>=1{
+                            need=*i as usize;
                         }
                     }
-                    break;
+                    // this thread don't need another mutex
+                    if need_back==need{
+                        return -1;
+                    }
+                }else{
+                    // didn't find a mutex loop => safe,wait for mutex unlock
+                    self.mutex_need[current_tid][mutex_id]=1;
+                    return -1;
                 }
             }
-            self.mutex_need[current_tid][mutex_id]=1;
-            return -1;
-            // alloc and test safety
-            // self.mutex_allocation[current_tid][mutex_id]+=1;
-            // self.mutex_available[mutex_id]-=1;
-            // self.mutex_need[current_tid][mutex_id]=0;
-            // if self.safe(&self.mutex_available,&self.mutex_allocation,&self.mutex_need,&self.mutex_finished){
-                // return 0;
-            // }else {
-                // unsafe and restore
-            //     self.mutex_allocation[current_tid][mutex_id]-=1;
-            //     self.mutex_available[mutex_id]+=1;
-            //     self.mutex_need[current_tid][mutex_id]=true;
-            //     println!("unsafe!");
-            //     return -1;
-            //  }
         }else{
-            println!("mutex {} tid {} sem_need_len {} sem_need_tid_len {}",mutex_id,current_tid,self.sem_need.len(),self.sem_need[0].len());
             self.mutex_need[current_tid][mutex_id]=0;
             self.mutex_allocation[current_tid][mutex_id]+=1;
             self.mutex_available[mutex_id]-=1;
@@ -161,59 +130,41 @@ impl ProcessControlBlockInner {
     }
     pub fn detect_semaphore_deadlock(&mut self,sem_id:usize)->i32{
         let current_tid=current_task().unwrap().inner_exclusive_access().get_tid();
-
-        // // error  => double down
-        // if self.sem_allocation[current_tid][sem_id]{
-        //     return -0xdead;
-        // }
-        // suspend current
         if self.sem_available[sem_id]<=0{
-            // println!("no resource! {}",sem_id);
-            let mut loop_detect=true;
-            // only two edge loop can be detected here! bad!
-            // but one task only need single sem at a time 
-            for (tid,alloc) in self.sem_allocation.iter().enumerate(){
-                if alloc[sem_id]>=1{
-                    let mut loop_=false;
-                    for i in self.sem_need[tid].iter(){
-                        if *i>=1 && self.sem_allocation[current_tid][*i as usize]>=1 && self.sem_available[*i as usize]<=0{
-                            // find a loop
-                            loop_=true;
-                        }
-                    }
-                    // no loop => waite
-                    if !loop_ {
-                        self.sem_need[current_tid][sem_id]=1;
-                        loop_detect=false;
-                        return -1;
-                    }
-                }
+            self.sem_need[current_tid][sem_id]+=1;
+            // dead lock
+            if self.find_sem_loop(current_tid, current_tid){
+                self.sem_need[current_tid][sem_id]-=1;
+                return -0xdead;
+            }else {
+                return -1;
             }
-            // loop => deadlock
-            return -0xdead;
         }else {
+            // safe
             self.sem_need[current_tid][sem_id]=0;
             self.sem_allocation[current_tid][sem_id]+=1;
             self.sem_available[sem_id]-=1;
             return 0;
         }
-        // try to alloc and test safety
-        // self.sem_allocation[current_tid][sem_id]+=1;
-        // self.sem_available[sem_id]-=1;
-        // self.sem_need[current_tid][sem_id]=false;
-        // if self.safe(&self.sem_available,&self.sem_allocation,&self.sem_need,&self.sem_finished){
-        //     // save 
-        //     println!("[{}] get sem{}",current_task().unwrap().inner_exclusive_access().get_tid(),sem_id);
-        //     return 0;
-        // }else {
-        //     // unsafe state =>  restore and suspend current
-        //     self.sem_allocation[current_tid][sem_id]-=1;
-        //     self.sem_available[sem_id]+=1;
-        //     self.sem_need[current_tid][sem_id]=true;
-        //     // println!("unsafe!");
-        //     return -0xdead;
-        // }
-        // 0
+    }
+    pub fn new_thread_with_detect(&mut self,new_task_tid:usize){
+        let task_len=self.tasks.len();
+        // modify mutex records
+        let mutex_len=self.mutex_list.len();
+        while task_len < new_task_tid{
+            self.mutex_allocation.push(Vec::new());
+            self.mutex_need.push(Vec::new());
+        }
+        self.mutex_allocation.push(vec![0;mutex_len]);
+        self.mutex_need.push(vec![0;mutex_len]);
+        // modify sem records
+        let sem_len=self.semaphore_list.len();
+        while task_len < new_task_tid{
+            self.sem_allocation.push(Vec::new());
+            self.sem_need.push(Vec::new());
+        }
+        self.sem_allocation.push(vec![0;sem_len]);
+        self.sem_need.push(vec![0;sem_len]);
     }
     #[allow(unused)]
     /// get the address of app's page table
@@ -285,11 +236,11 @@ impl ProcessControlBlock {
                     deadlock_detect:false,
                     mutex_allocation:vec![Vec::new()],
                     mutex_available:Vec::new(),
-                    mutex_finished:vec![false],
+                    // mutex_finished:vec![false],
                     mutex_need:vec![Vec::new()],
                     sem_allocation:vec![Vec::new()],
                     sem_available:Vec::new(),
-                    sem_finished:vec![false],
+                    // sem_finished:vec![false],
                     sem_need:vec![Vec::new()],
                 })
             },
@@ -420,11 +371,11 @@ impl ProcessControlBlock {
                     deadlock_detect:parent.deadlock_detect,
                     mutex_allocation:vec![Vec::new()],
                     mutex_available:Vec::new(),
-                    mutex_finished:vec![false],
+                    // mutex_finished:vec![false],
                     mutex_need:vec![Vec::new()],
                     sem_allocation:vec![Vec::new()],
                     sem_available:Vec::new(),
-                    sem_finished:vec![false],
+                    // sem_finished:vec![false],
                     sem_need:vec![Vec::new()],
                 })
             },
