@@ -54,21 +54,6 @@ pub fn run_tasks() {
     loop {
         let mut processor = PROCESSOR.exclusive_access();
         if let Some(task) = fetch_task() {
-            // let tid=task.inner_exclusive_access().get_tid();
-            // let process = task.process.upgrade().unwrap();
-            // let process_inner = process.inner_exclusive_access();
-            // let detect=process_inner.deadlock_detect;
-            // let sem_enable=process_inner.semaphore_list.len()>=1;
-            // if detect && sem_enable{
-            //     let avail=process_inner.sem_available[0];
-            //     let alloc =process_inner.sem_allocation[tid][0];
-            //     drop(process_inner);
-            //     drop(process);
-            //     println!("deadlock detect next tid {} sem0-{} alloc-{}",tid,avail,alloc);
-            // }else {
-            //     drop(process_inner);
-            //     drop(process);
-            // }
             let idle_task_cx_ptr = processor.get_idle_task_cx_ptr();
             // access coming task TCB exclusively
             let mut task_inner = task.inner_exclusive_access();
